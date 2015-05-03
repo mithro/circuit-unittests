@@ -10,7 +10,8 @@ netfile = kicad_netlist_reader.netlist(sys.argv[1])
 
 from collections import namedtuple
 
-def other_pin(part, pin):
+def connected_pin(component, pin):
+    part = component.part
     if part in ('R', 'C'):
         if pin == 1:
             return 2
@@ -31,6 +32,10 @@ def other_pin(part, pin):
             return 6
         elif pin == 6:
             return 5
+        elif pin == 7:
+            return 8
+        elif pin == 8:
+            return 7
         else:
             raise IOError('Unknown pin! %s' % pin)
 
@@ -40,8 +45,11 @@ def other_pin(part, pin):
         # 19 == 20
         # 18 == 21
         # 17 == 22
+        if pin < 16 or pin > 23:
+            return
+
         if pin < 20:
-            return 20 + 20 - pin
+            return 20 + (19 - pin)
         else:
             return 39 - pin
     else:
@@ -68,10 +76,21 @@ class Component(ComponentBase):
         return self.part in ('C', 'R')
 
 
+assert connected_pin(Component('A', 'IP4776CZ38'), 16) == 23
+assert connected_pin(Component('A', 'IP4776CZ38'), 17) == 22
+assert connected_pin(Component('A', 'IP4776CZ38'), 18) == 21
+assert connected_pin(Component('A', 'IP4776CZ38'), 19) == 20
+assert connected_pin(Component('A', 'IP4776CZ38'), 20) == 19
+assert connected_pin(Component('A', 'IP4776CZ38'), 21) == 18
+assert connected_pin(Component('A', 'IP4776CZ38'), 22) == 17
+assert connected_pin(Component('A', 'IP4776CZ38'), 23) == 16
+
+
 ConnectionBase = namedtuple("Connection", ['component', 'pin', 'via'])
 class Connection(ConnectionBase):
     def __new__(cls, component, pin, via=None):
         return ConnectionBase.__new__(cls, component=component, pin=pin, via=via)
+
 
 NetBase = namedtuple("Net", ['name', 'connections'])
 class Net(NetBase):
@@ -95,24 +114,12 @@ class Net(NetBase):
 Pull = namedtuple('Pull', ['net', 'via', 'to'])
 
 
-RouteBase = namedtuple('Route', ['netA', 'via', 'netB'])
-class Route(RouteBase):
-    def __new__(cls, netA, via, netB):
-        assert netA != netB
-        #if netA < netB:
-        #    netA, netB = netB, netA
-        return RouteBase.__new__(cls, netA=netA, via=via, netB=netB)
-
-
 class Schematic(object):
     def __init__(self):
         self.nets = {}
         self.components = {}
 
         self.components2nets = {}
-
-        self.pulls = {}
-        self.routes = {}
 
     def add_net(self, net):
         assert isinstance(net, Net)
@@ -131,32 +138,10 @@ class Schematic(object):
         assert comp.name not in self.components
         self.components[comp.name] = comp
 
-    def net_other_pin(self, component, pin):
-        assert component.name in self.components
-        pins = self.components2nets[component.name].keys()
-        assert len(pins) == 2
-        assert pin in pins
-        pins.remove(pin)
-        assert len(pins) == 1
-        assert pins[0] != pin
-        netnameA = self.components2nets[component.name][pin]
-        netnameB = self.components2nets[component.name][pins[0]]
-        assert netnameA != netnameB
-        return self.nets[netnameB]
-
-    def add_pull_connection(self, net, via, to):
-        assert via.name in self.components
-        pulls = self.pulls.setdefault(net.name, set())
-        pulls.add(Pull(net=net.name, via=via.name, to=to.name))
-
-    def add_passive_connection(self, netA, via, netB):
-        assert via.name in self.components
-        netA_routes = self.routes.setdefault(netA.name, set())
-        netA_routes.add(Route(netA=netA.name, via=via.name, netB=netB.name))
-
-        netB_routes = self.routes.setdefault(netB.name, set())
-        netB_routes.add(Route(netA=netB.name, via=via.name, netB=netA.name))
-
+    def net_for_pin(self, component, pin):
+        assert pin
+        netname = self.components2nets[component.name][pin]
+        return self.nets[netname]
 
 # ---------------------------------
 
@@ -192,11 +177,14 @@ for net in sorted(schematic.nets.values()):
         searched_connections.add(connection)
 
         component = schematic.components[connection.component]
-        if not component.is_passive:
+
+        other_pin = connected_pin(component, connection.pin)
+        assert other_pin != connection.pin
+        if not other_pin:
             fake_connections.add(connection)
             continue
         
-        other_net = schematic.net_other_pin(component, connection.pin)
+        other_net = schematic.net_for_pin(component, other_pin)
         assert net.name != other_net.name, "%s == %s" % (net.name, other_net.name)
         if other_net.is_power:
             fake_pulls.add(Pull(net=net.name, via=component.name, to=other_net.name))

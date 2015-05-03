@@ -2,9 +2,6 @@
 # vim: set ts=4 sw=4 et sts=4 ai:
 
 import sys
-
-import xml.sax as sax
-
 import kicad_netlist_reader
 netfile = kicad_netlist_reader.netlist(sys.argv[1])
 
@@ -42,7 +39,7 @@ for node in netfile.nets:
 # Associate nets with components
 # ---------------------------------
 
-component_nets = {}
+components_nets = {}
 for netname, node in nets.items():
     for child in node.getChildren():
         comp_ref = child.attributes['ref']
@@ -53,11 +50,11 @@ for netname, node in nets.items():
         except ValueError:
             pass
 
-        component_pins = component_nets.setdefault(comp_ref, {})
+        component_pins = components_nets.setdefault(comp_ref, {})
         if comp_pin in component_pins:
-            assert node.attributes == component_pins[comp_pin], "%s %s %s" % (comp_pin, component_pins[comp_pin], node.attributes)
+            assert netname == component_pins[comp_pin], "%s %s %s" % (comp_pin, component_pins[comp_pin], netname)
         else:
-            component_pins[comp_pin] = node.attributes
+            component_pins[comp_pin] = netname
 
 # ---------------------------------
 # Sort the components into types
@@ -80,7 +77,7 @@ for component in netfile.getInterestingComponents():
 
 if not fpga:
     raise IOError("FPGA part not found")
-    
+
 # ---------------------------------
 # Work out connections through passive components
 # ---------------------------------
@@ -102,7 +99,7 @@ for netname, node in nets.items():
         ref = node.attributes['ref']
         if ref not in passives:
             continue
-        net_passives[ref] = component_nets[ref]
+        net_passives[ref] = set(components_nets[ref].values())
 
     if not net_passives:
         continue
@@ -159,14 +156,13 @@ for connection in full_connections:
 class NC(object):
     pass
 
-Connected = namedtuple("Connected", ['net', 'components'])
-ConnectedVia = namedtuple("ConnectedVia", ['net', 'components', 'path'])
+Connected = namedtuple("Connected", ['net', 'component', 'pin'])
+ConnectedVia = namedtuple("ConnectedVia", ['net', 'component', 'path'])
 
 component_annotated = {}
-
 for comp_ref, comp_node in components.items():
     comp_pins = getpins(comp_node)
-    comp_nets = component_nets(comp_ref)
+    comp_nets = components_nets[comp_ref]
 
     annotated = {}
     for pin in comp_pins:
@@ -174,20 +170,37 @@ for comp_ref, comp_node in components.items():
             annotated[pin] = NC()
             continue
 
-        pin_net = comp_nets[pin]
-        if pin_net in pulled:
-            annotated[pin] = pulled[pin_net]
+        pin_netname = comp_nets[pin]
+        pin_nets = [pin_netname]
+        if pin_netname in connections:
+            pin_nets = connections[pin_netname]
+        
+        connections = set()
+        for net in pin_nets:
+            net_node = nets[net]
+            for child in net_node.getChildren():
+                connections.add(Connected(net=netname, component=child.attributes['ref'], pin=child.attributes['pin']))
+
+        assert connections, pin_nets
+        assert pin not in annotated
+        annotated[pin] = connections
+        continue
+
+        print comp_ref, pin, connections
+
+        pin_netname = comp_nets[pin]
+        if pin_netname in pulled:
+            annotated[pin] = pulled[pin_netname]
             continue
-
-        for connected in connections:
-            if pin_net in connected:
-                break
+        elif pin_netname in connections:
+            annotated[pin] = [ConnectedVia(net=pin_netname, components=[], path=[])]
         else:
-            annotated
+            annotated[pin] = Connected(net=pin_netname, components=[])
 
+    component_annotated[comp_ref] = annotated
 
-
-
+import pprint
+pprint.pprint(component_annotated)
 
 """
 

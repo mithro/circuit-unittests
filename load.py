@@ -8,6 +8,8 @@ import xml.sax as sax
 import kicad_netlist_reader
 netfile = kicad_netlist_reader.netlist(sys.argv[1])
 
+# ---------------------------------
+
 def getpins(comp):
     pins = []
     for node in comp.getLibPart().element.getChild('pins').getChildren():
@@ -28,6 +30,39 @@ def power_type(netname):
         return "GND"
     return None
 
+# ---------------------------------
+
+nets = {}
+for node in netfile.nets:
+    netname = node.attributes['name']
+    assert netname not in nets 
+    nets[netname] = node
+
+# ---------------------------------
+# Associate nets with components
+# ---------------------------------
+
+component_nets = {}
+for netname, node in nets.items():
+    for child in node.getChildren():
+        comp_ref = child.attributes['ref']
+
+        comp_pin = child.attributes['pin']
+        try:
+            comp_pin = int(comp_pin)
+        except ValueError:
+            pass
+
+        component_pins = component_nets.setdefault(comp_ref, {})
+        if comp_pin in component_pins:
+            assert node.attributes == component_pins[comp_pin], "%s %s %s" % (comp_pin, component_pins[comp_pin], node.attributes)
+        else:
+            component_pins[comp_pin] = node.attributes
+
+# ---------------------------------
+# Sort the components into types
+# ---------------------------------
+
 # Find the FPGA component
 passives = {}
 components = {}
@@ -45,23 +80,13 @@ for component in netfile.getInterestingComponents():
 
 if not fpga:
     raise IOError("FPGA part not found")
-
-fpga_ref = fpga.getRef()
-
-nets = {}
-for node in netfile.nets:
-    netname = node.attributes['name']
-    assert netname not in nets 
-    nets[netname] = node
-
-component_nets = {}
-for netname, node in nets.items():
-    for node in node.getChildren():
-        ref = node.attributes['ref']
-        component_nets.setdefault(ref, set()).add(netname)
+    
+# ---------------------------------
+# Work out connections through passive components
+# ---------------------------------
 
 from collections import namedtuple
-Pull = namedtuple('Pull', ['by', 'to', 'type'])
+Pull = namedtuple('Pull', ['net', 'by', 'to', 'type'])
 Connection = namedtuple('Connection', ['by', 'to'])
 
 connected_nets = {}
@@ -97,7 +122,7 @@ for netname, node in nets.items():
             other_net = list(other_nets)[0]
             pulltype = power_type(other_net)
             if pulltype:
-                pulled.setdefault(netname, set()).add(Pull(by=ref, to=other_net, type=pulltype))
+                pulled.setdefault(netname, set()).add(Pull(net=netname, by=ref, to=other_net, type=pulltype))
                 continue
 
         for other_net in other_nets:
@@ -116,13 +141,56 @@ def full_path(path):
         path.append(connection.to)
         full_path(path)
 
-connections = set()
+full_connections = set()
 for net in connected_nets:
     path = []
     path.append(net)
     full_path(path)
     path.sort()
-    connections.add(tuple(path))
+    full_connections.add(tuple(path))
+
+connections = {}
+for connection in full_connections:
+    for netname in connection:
+        connections[netname] = connection
+
+# ---------------------------------
+
+class NC(object):
+    pass
+
+Connected = namedtuple("Connected", ['net', 'components'])
+ConnectedVia = namedtuple("ConnectedVia", ['net', 'components', 'path'])
+
+component_annotated = {}
+
+for comp_ref, comp_node in components.items():
+    comp_pins = getpins(comp_node)
+    comp_nets = component_nets(comp_ref)
+
+    annotated = {}
+    for pin in comp_pins:
+        if pin not in comp_nets:
+            annotated[pin] = NC()
+            continue
+
+        pin_net = comp_nets[pin]
+        if pin_net in pulled:
+            annotated[pin] = pulled[pin_net]
+            continue
+
+        for connected in connections:
+            if pin_net in connected:
+                break
+        else:
+            annotated
+
+
+
+
+
+"""
+
 
 import pprint
 pprint.pprint(connections)
@@ -159,7 +227,6 @@ for nodes in simple_nets():
         pin_info = component_info.setdefault(comp_pin, set())
         pin_info.append(net_node)
 
-    """
 component_to_nets = {}
 
 fgpa_to_components = {}
@@ -195,7 +262,6 @@ fgpa_to_components = {}
         pin_to_fpga = component_pins_to_fpga.setdefault(comp_pin, set())
         for fpga_netnode, fpga_node in fpga_nodes:
             pin_to_fpga.add(((comp_netnode.attributes['name'], fpga_netnode.attributes['name']), fpga_node.attributes['pin']))
-"""
 
 for ref, component_pins_to_fpga in components_to_fpga.items():
     component = components[ref]
@@ -215,8 +281,6 @@ for ref, component_pins_to_fpga in components_to_fpga.items():
                     print comp_net, "->", fpga_net
 
     print
-
-"""
 
     for node in fpga_nodes:
         pin = node.attributes['pin']

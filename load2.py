@@ -19,7 +19,7 @@ def to_value(a):
     elif a >= 1e3:
         return "{0}k".format(int(a/1e3))
     return "{0}".format(a)
-    
+
 
 def from_value(a):
     try:
@@ -32,11 +32,11 @@ def from_value(a):
                 b = "0"
         if b == "240E":
             return "unknown"
-        elif b.endswith('pf'): 
+        elif b.endswith('pf'):
             return float(b[:-2]) * 1e-12
-        elif b.endswith('nf'): 
+        elif b.endswith('nf'):
             return float(b[:-2]) * 1e-9
-        elif b.endswith('uf'): 
+        elif b.endswith('uf'):
             return float(b[:-2]) * 1e-6
         elif b.endswith('mf') or b.endswith('mh'):
             return float(b[:-2]) * 1e-3
@@ -160,6 +160,30 @@ class Part(PartBase):
                 return 'SSTL15_II'
             assert False, "%s pin had description %s" % (pin, desc)
 
+        elif self.name == "MICRO_SD":
+            return "SDIO"
+
+        elif self.name == "CY7C68013A_100AC":
+            return "LVCMOS33"
+
+        elif self.name == "RTL8211E-VL":
+            if desc in ("MDC", "MDIO"):
+                return "I2C"
+            return "LVCMOS33"
+
+        elif self.name == "TIMVIDEOS-PCIE-8X":
+            if desc in ("IDCLK", "IDDAT"):
+                return "I2C"
+            elif desc in ("~RST"):
+                return "LVCMOS33"
+            return "LVDS33"
+
+        elif self.name == "24AA02E48":
+            return "I2C"
+
+        elif self.name == "USB3340":
+            return "LVCMOS33"
+
         return
 
     def net_name(self, pin):
@@ -170,7 +194,7 @@ class Part(PartBase):
                 if data.group(2) == '+':
                     return "hdmi_{0}_p["+data.group(1)+"]"
                 elif data.group(2) == '-':
-                    return "hdmi_{0}_p["+data.group(1)+"]"
+                    return "hdmi_{0}_n["+data.group(1)+"]"
                 else:
                     assert False, (pin, desc, data.group(1), data.group(2))
             elif desc == 'CLK+':
@@ -183,7 +207,7 @@ class Part(PartBase):
                 assert False, (pin, desc)
         elif self.name == "DISPLAY_PORT":
             if desc.startswith('ML_Lane'):
-                return "dp_{0}_lnk_%s[%s]" % (desc[6].lower(), desc[7])
+                return "dp_{0}_lnk_%s[%s]" % (desc[7].lower(), desc[8])
             elif desc == "AUXCH_P":
                 return "dp_{0}_aux_p"
             elif desc == "AUXCH_N":
@@ -198,17 +222,70 @@ class Part(PartBase):
                 assert False, (pin, desc)
 
         elif self.name == "MT41J128M16":
-            if desc == 'CK':
-                return "mcb_dram_ck"
-            elif desc == 'CKE':
-                return "mcb_dram_ck_n"
+            if desc in ('CK', 'CK_N', "LDQS", "LDQS_N", "UDQS", "UDQS_N") or desc in ("CKE","UDM","LDM","RAS_N","RESET_N","ODT","CAS_N","WE_N"):
+                return "mcb_dram_" + desc.lower()
             elif desc[0] in ('D', 'A', 'B'):
-                match = re.match('([ADBQ]*)([0-9]*)')
+                match = re.match('([ADBQ]*)([0-9]*)', desc)
                 return "mcb_dram_{0}[{1}]".format(
                     match.group(1).lower(), match.group(2))
             else:
                 assert False, (pin, desc)
-            
+
+        elif self.name == "TIMVIDEOS-PCIE-8X":
+            if desc.lower() == "~rst":
+                return "exp_rst"
+            elif desc in ("IDCLK", "IDDAT"):
+                return "exp_" + desc.lower()
+            elif desc.startswith("DIFF"):
+                desc = desc[5:]
+            return "exp_{0}_{1}".format(desc.lower()[:-1], desc.lower()[-1])
+
+        elif self.name == "CY7C68013A_100AC":
+            if desc == "INIT5#":
+                return "fx2_init5_n"
+
+            if desc in ("RXD0", "RXD1", "TXD0", "TXD1", "T0"):
+                return "fx2_" + desc.lower()
+
+            slash = desc.find('/')
+            if slash >= 0:
+                desc = desc[:slash]
+
+            if desc.endswith('#'):
+                desc = desc[:-1]+"_n"
+
+            if desc.startswith('*'):
+                desc = desc[1:]
+
+            match = re.match('([A-Za-z]*)([0-9]+)', desc)
+            if not match:
+                return "fx2_" + desc.lower()
+            else:
+                return "fx2_{0}[{1}]".format(match.group(1).lower(), match.group(2))
+
+        elif self.name == "RTL8211E-VL":
+            slash = desc.find('/')
+            if slash >= 0:
+                desc = desc[:slash]
+            match = re.match('([RTXD]*)([0-9]+)', desc)
+            if not match:
+                return "eth_" + desc.lower()
+            else:
+                return "eth_{0}[{1}]".format(match.group(1).lower(), match.group(2))
+
+        elif self.name == "MICRO_SD":
+            return "sdcard_" + desc.lower()
+
+        elif self.name == "24AA02E48":
+            return "eeprom_" + desc.lower()
+
+        elif self.name == "USB3340":
+            match = re.match('([A-Za-z]*)([0-9]+)', desc)
+            if not match:
+                return "utmi_" + desc.lower()
+            else:
+                return "utmi_{0}[{1}]".format(match.group(1).lower(), match.group(2))
+
 
 part = Part('IP4776CZ38')
 assert part.connected_pin(16) == 23
@@ -230,7 +307,7 @@ class Component(ComponentBase):
     @property
     def is_connector(self):
         return component.name.startswith('J') and not component.name.startswith('JP')
-        
+
 
 
 ConnectionBase = namedtuple("Connection", ['component', 'pin', 'via'])
@@ -288,7 +365,7 @@ class Schematic(object):
 
             c2net = self.components2nets.setdefault(c.component, {})
             assert c.pin not in c2net, "Found pin %r already in schematic\n\nNew net - %r\n%r\n\nExisting - %r\n%r\n)" % (
-                c, 
+                c,
                 net.name, net,
                 c2net[c.pin], self.nets[c2net[c.pin]],
                 )
@@ -326,7 +403,7 @@ for node in netfile.libparts:
                 name=pinnode.attributes['num'],
                 description=pinnode.attributes['name'],
                 type=pinnode.attributes['type'])
-            
+
     schematic.add_part(part)
     connectivity.add_part(part)
 
@@ -381,7 +458,7 @@ for net in sorted(schematic.nets.values()):
         if not other_pin:
             fake_connections.add(connection)
             continue
-        
+
         other_net = schematic.net_for_pin(component, other_pin)
         assert net.name != other_net.name, "%s == %s" % (net.name, other_net.name)
         if other_net.is_power:
@@ -447,6 +524,9 @@ for component in sorted(connectivity.components.values(), cmp=sort_by_part):
         continue
 
     part = connectivity.parts[component.part]
+    if part == "IP4776CZ38":
+        continue
+
     pins2net = connectivity.components2nets[component.name]
 
     print "# {1} - connector {0}".format(*component),
@@ -475,14 +555,14 @@ for component in sorted(connectivity.components.values(), cmp=sort_by_part):
                     else:
                         t = 'Strongly'
 
-                print "# {0} pulled ({3}) to {1} via {2}".format(
+                print "# \/ {0} pulled ({3}) to {1} via {2}".format(
                     t, pull.to, pull.via, to_value(v))
 
         for connection in net.connections:
             if connection.component == connectivity.get_fpga():
                 netname = part.net_name(pin.name).format(component.name.lower())
                 print """\
-NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)10s;
+NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)15s;
 """ % {
     'netname': netname,
     'pad':  " "*(20 - len(netname)),
@@ -492,6 +572,10 @@ NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)10s;
     print
 
 
+def sort_by_desc(pin_a, pin_b):
+    return cmp((pin_a.description, pin_b.name), (pin_b.description, pin_b.name))
+
+
 for component in sorted(connectivity.components.values()):
     if component.is_connector or component.is_passive:
         continue
@@ -499,11 +583,17 @@ for component in sorted(connectivity.components.values()):
     if not component_connected_to_fpga(connectivity, component):
         continue
 
+    if component.name == connectivity.get_fpga():
+        continue
+
     part = connectivity.parts[component.part]
     pins2net = connectivity.components2nets[component.name]
 
+    if part.name == "IP4776CZ38":
+        continue
+
     print "# {1} - connector {0}".format(*component)
-    for pin in sorted(part.pins.values()):
+    for pin in sorted(part.pins.values(), cmp=sort_by_desc):
         if pin.name not in pins2net:
             continue
 
@@ -523,15 +613,19 @@ for component in sorted(connectivity.components.values()):
                     else:
                         t = 'Strongly'
 
-                print "# {0} pulled ({3}) to {1} via {2}".format(
+                print "# \/ {0} pulled ({3}) to {1} via {2}".format(
                     t, pull.to, pull.via, to_value(v))
 
         for connection in net.connections:
             if connection.component == connectivity.get_fpga():
-                netname = part.net_name(pin.name).format(component.name.lower())
+                netname = part.net_name(pin.name)
+                if netname is not None:
+                    netname = netname.format(component.name.lower())
+                else:
+                    netname = str("???")
                 iostandard = part.io_standard(pin.name)
                 print """\
-NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)10s;
+NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)15s;
 """ % {
     'netname': netname,
     'pad':  " "*(20 - len(netname)),

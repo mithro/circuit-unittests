@@ -11,6 +11,47 @@ netfile = kicad_netlist_reader.netlist(sys.argv[1])
 from collections import namedtuple
 
 
+def to_value(a):
+    if not isinstance(a, float):
+        return a
+    if a >= 1e6:
+        return "{0}M".format(int(a/1e6))
+    elif a >= 1e3:
+        return "{0}k".format(int(a/1e3))
+    return "{0}".format(a)
+    
+
+def from_value(a):
+    try:
+        b = a.lower()
+        if b.endswith('d'):
+            b = b[:-1]
+        if b.endswith('r'):
+            b = b[:-1]
+            if not b:
+                b = "0"
+        if b == "240E":
+            return "unknown"
+        elif b.endswith('pf'): 
+            return float(b[:-2]) * 1e-12
+        elif b.endswith('nf'): 
+            return float(b[:-2]) * 1e-9
+        elif b.endswith('uf'): 
+            return float(b[:-2]) * 1e-6
+        elif b.endswith('mf') or b.endswith('mh'):
+            return float(b[:-2]) * 1e-3
+        elif b.endswith('k'):
+            return float(b[:-1]) * 1e3
+        elif b.endswith('m'):
+            return float(b[:-1]) * 1e6
+        elif 'k' in b:
+            return float(b.replace('k', '.')) * 1e3
+        else:
+            return float(b)
+    except ValueError:
+        return a
+
+
 PinBase = namedtuple("Pin", ["name", "description", "type"])
 class Pin(PinBase):
     @staticmethod
@@ -112,6 +153,13 @@ class Part(PartBase):
             else:
                 assert False, "%s pin had description %s" % (pin, desc)
 
+        elif self.name == "MT41J128M16":
+            if desc in ('CK', 'CK_N', "LDQS", "LDQS_N", "UDQS", "UDQS_N"):
+                return 'DIFF_SSTL15_II'
+            elif desc.startswith('D') or desc.startswith('A') or desc.startswith('BA') or desc in ("CKE","UDM","LDM","RAS_N","RESET_N","ODT","CAS_N","WE_N"):
+                return 'SSTL15_II'
+            assert False, "%s pin had description %s" % (pin, desc)
+
         return
 
     def net_name(self, pin):
@@ -147,7 +195,19 @@ class Part(PartBase):
             elif desc == "HPD":
                 return "dp_{0}_hpd"
             else:
-                assert False, pin
+                assert False, (pin, desc)
+
+        elif self.name == "MT41J128M16":
+            if desc == 'CK':
+                return "mcb_dram_ck"
+            elif desc == 'CKE':
+                return "mcb_dram_ck_n"
+            elif desc[0] in ('D', 'A', 'B'):
+                match = re.match('([ADBQ]*)([0-9]*)')
+                return "mcb_dram_{0}[{1}]".format(
+                    match.group(1).lower(), match.group(2))
+            else:
+                assert False, (pin, desc)
             
 
 part = Part('IP4776CZ38')
@@ -161,11 +221,16 @@ assert part.connected_pin(22) == 17
 assert part.connected_pin(23) == 16
 
 
-ComponentBase = namedtuple("Component", ['name', 'part'])
+ComponentBase = namedtuple("Component", ['name', 'part', 'fields'])
 class Component(ComponentBase):
     @property
     def is_passive(self):
         return self.part in ('C', 'R')
+
+    @property
+    def is_connector(self):
+        return component.name.startswith('J') and not component.name.startswith('JP')
+        
 
 
 ConnectionBase = namedtuple("Connection", ['component', 'pin', 'via'])
@@ -266,9 +331,18 @@ for node in netfile.libparts:
     connectivity.add_part(part)
 
 for node in netfile.getInterestingComponents():
+    fields = {}
+    for fieldname in node.getFieldNames():
+        fields[fieldname.lower()] = node.getField(fieldname)
+
+    if node.getValue():
+        fields['value'] = from_value(node.getValue())
+
     component = Component(
         name=node.getRef(),
-        part=node.getPartName())
+        part=node.getPartName(),
+        fields=fields,
+        )
 
     schematic.add_component(component)
     connectivity.add_component(component)
@@ -340,28 +414,129 @@ for net in sorted(schematic.nets.values()):
     connectivity.add_net(fake_net)
 
 
-for component in connectivity.components.values():
-    if not component.name.startswith('J') or component.name.startswith('JP'):
+def sort_by_part(c1, c2):
+    return cmp((c1.part, c1.fields.values(), c1.name), (c2.part, c2.fields.values(), c2.name))
+
+
+def net_connected_to_fpga(schematic, net):
+    for connection in net.connections:
+        if connection.component == schematic.get_fpga():
+            return True
+    return False
+
+def component_connected_to_fpga(schematic, component):
+    if component == schematic.get_fpga():
+        return False
+    if component.name not in schematic.components2nets:
+        return False
+
+    nets = schematic.components2nets[component.name]
+    for netname in nets.values():
+        if net_connected_to_fpga(schematic, schematic.nets[netname]):
+            return True
+
+    return False
+
+
+# Output the UCF for connectors which are directly connected to the FPGA
+for component in sorted(connectivity.components.values(), cmp=sort_by_part):
+    if not component.is_connector:
         continue
 
-    print "# {1} - connector {0}".format(*component)
+    if not component_connected_to_fpga(connectivity, component):
+        continue
+
     part = connectivity.parts[component.part]
     pins2net = connectivity.components2nets[component.name]
+
+    print "# {1} - connector {0}".format(*component),
+    if 'direction' in component.fields:
+        print "- Direction {0}".format(component.fields['direction'])
+    else:
+        print
+
     for pin in sorted(part.pins.values()):
         if pin.name not in pins2net:
             continue
 
         net = connectivity.nets[pins2net[pin.name]]
+        if net.pulls and net_connected_to_fpga(connectivity, net):
+            for pull in net.pulls:
+                comp = connectivity.components[pull.via]
+                if comp.part != 'R':
+                    continue
+
+                v = '??'
+                t = 'unknown'
+                if 'value' in comp.fields:
+                    v = comp.fields['value']
+                    if v > 10e3:
+                        t = 'Weakly'
+                    else:
+                        t = 'Strongly'
+
+                print "# {0} pulled ({3}) to {1} via {2}".format(
+                    t, pull.to, pull.via, to_value(v))
+
         for connection in net.connections:
             if connection.component == connectivity.get_fpga():
                 netname = part.net_name(pin.name).format(component.name.lower())
                 print """\
-NET "%(netname)s"%(pad)s LOC = %(fpga_pin)s IOSTANDARD = %(io_standard)s;
+NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)10s;
 """ % {
     'netname': netname,
     'pad':  " "*(20 - len(netname)),
     'fpga_pin': "%s%s" % connection.pin,
     'io_standard': part.io_standard(pin.name),
+    },
+    print
+
+
+for component in sorted(connectivity.components.values()):
+    if component.is_connector or component.is_passive:
+        continue
+
+    if not component_connected_to_fpga(connectivity, component):
+        continue
+
+    part = connectivity.parts[component.part]
+    pins2net = connectivity.components2nets[component.name]
+
+    print "# {1} - connector {0}".format(*component)
+    for pin in sorted(part.pins.values()):
+        if pin.name not in pins2net:
+            continue
+
+        net = connectivity.nets[pins2net[pin.name]]
+        if net.pulls and net_connected_to_fpga(connectivity, net):
+            for pull in net.pulls:
+                comp = connectivity.components[pull.via]
+                if comp.part != 'R':
+                    continue
+
+                v = '??'
+                t = 'unknown'
+                if 'value' in comp.fields:
+                    v = comp.fields['value']
+                    if v > 10e3:
+                        t = 'Weakly'
+                    else:
+                        t = 'Strongly'
+
+                print "# {0} pulled ({3}) to {1} via {2}".format(
+                    t, pull.to, pull.via, to_value(v))
+
+        for connection in net.connections:
+            if connection.component == connectivity.get_fpga():
+                netname = part.net_name(pin.name).format(component.name.lower())
+                iostandard = part.io_standard(pin.name)
+                print """\
+NET "%(netname)s"%(pad)s LOC = %(fpga_pin)5s  IOSTANDARD = %(io_standard)10s;
+""" % {
+    'netname': netname,
+    'pad':  " "*(20 - len(netname)),
+    'fpga_pin': "%s%s" % connection.pin,
+    'io_standard': iostandard,
     },
     print
 

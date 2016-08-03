@@ -38,6 +38,9 @@ schematic details too.
    * `VCC12V`
    * `VCC(([0-9]V[0-9])|([0-9][0-9]V))`
 
+ - [ ] Check for unnamed nets in the schematic
+   * Highlight all nets which have the unnamed form of N-XXXXX
+
 ---------------------------------------
 
 ### DisplayPort

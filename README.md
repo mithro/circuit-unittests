@@ -162,6 +162,34 @@ Checks for Xilinx Spartan 6 FPGA.
  - [ ] Check the length of a group of traces matches within tolerances.
  - [ ] Check the  
 
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+# KiCad Features
+
+List of random KiCad features which would be awesome;
+
+ - "Trace length matching" check.
+   * As part of the DRC check type thing.
+   * Traces which are tagged as needing to be the same length should be recorded as the same length.
+
+ - Move trace to different layer
+   * Select trace.
+   * Select layer to move to.
+   * Anything between vias on the selected trace is moved to the selected layer.
+
+  - Trace impedance optimisation /  "Skinny Traces" - Handling pad capacitance
+   * Select trace connected to a pad or via.
+   * Select impedance matching characteristics.
+   * Tapers the trace for a section to counteract the change by the extra pad size.
+   * http://www.ti.com/lit/an/slla324/slla324.pdf
+
+
+
+
+### Other random thoughts
+
+
 
 
 

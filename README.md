@@ -33,6 +33,10 @@ schematic details too.
 ### Generic Checks
 
  - [ ] Check that a `XXX_N` has an associated `XXX_P`
+ - [ ] Check power rail name formatting;
+   * `VCC5V0` - `VCC_5V0` - `VCC5V` - `VCC_5V`
+   * `VCC12V`
+   * `VCC(([0-9]V[0-9])|([0-9][0-9]V))`
 
 ---------------------------------------
 
